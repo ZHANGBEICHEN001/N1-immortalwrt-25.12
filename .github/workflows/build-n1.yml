@@ -195,6 +195,12 @@ jobs:
           grep -n -A5 -B1 'config PACKAGE_luci-app-openclash' tmp/.config-package.in | head -20 || true
           echo "---- 关键配置 ----"
           grep -E '^CONFIG_(TARGET_armsr|TARGET_ROOTFS_TARGZ|USE_APK|PACKAGE_luci-app-openclash|PACKAGE_luci-app-amlogic|CCACHE)' .config || true
+          # 防回归：YJIT 一旦被上游重新默认开启，ruby 就会拉回 rust/host，
+          # 而 lang/rust 的 CI LLVM 预编译包下载必然 404，白跑一小时才失败。
+          echo "---- Ruby YJIT（rust/host 依赖开关）----"
+          grep -E '^CONFIG_RUBY_ENABLE_YJIT' .config || echo "符号未在 .config 中出现"
+          grep -q '^CONFIG_RUBY_ENABLE_YJIT=y' .config && {
+            echo "::error::Ruby YJIT 仍处于开启状态，会拉入无法下载的 rust/host"; exit 1; }
           grep -q '^CONFIG_TARGET_armsr_armv8=y' .config || { echo "::error::目标平台未生效"; exit 1; }
           grep -q '^CONFIG_PACKAGE_luci-app-openclash=y' .config || { echo "::error::OpenClash 未进入配置"; exit 1; }
           grep -q '^CONFIG_TARGET_ROOTFS_TARGZ=y' .config \
