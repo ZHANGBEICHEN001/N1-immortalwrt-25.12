@@ -1,0 +1,4 @@
+# 本项目含 shell 脚本与 GitHub Actions YAML，在 Linux runner 上执行。
+# 强制仓库与工作区都使用 LF，避免 Windows 的 core.autocrlf 引入 CRLF 导致
+# "bad interpreter" / "\r: command not found" 一类问题。
+* text=auto eol=lf

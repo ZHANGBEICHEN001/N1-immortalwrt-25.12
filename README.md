@@ -54,17 +54,25 @@ openwrt_s905d_n1_*.img.gz → GitHub Release
 
 ## 2. 部署（一次性，约 3 分钟）
 
-**前置**：GitHub 账号、本地装好 `git` 与 [GitHub CLI](https://cli.github.com) 并 `gh auth login`。
+**前置**：GitHub 账号、本地装好 `git` 与 [GitHub CLI](https://cli.github.com) 并 `gh auth login`。登录时 token 需要 `repo` 与 `workflow` scope（推送 `.github/workflows/` 必须有 `workflow`），并同意用它配置 Git 凭证：
 
-1. **Fork 源码**：打开 <https://github.com/immortalwrt/immortalwrt/fork>，创建一个 fork（仓库名随意，例如 `immortalwrt`）。**建议设为 Public** —— 公开仓库的 Actions 免费且不限时长配额；私有仓库每月 2000 分钟，一次全量编译 2~4 小时会很快用完。
+```bash
+gh auth login --web --git-protocol https --scopes "repo,read:org,workflow"
+```
+
+1. **Fork 源码**：打开 <https://github.com/immortalwrt/immortalwrt/fork>，创建一个 fork（仓库名随意）。**建议设为 Public** —— 公开仓库的 Actions 免费且不限时长配额；私有仓库每月 2000 分钟，一次全量编译 2~4 小时会很快用完。
+
+   > 注意：**GitHub 的 Fork 默认只复制上游的默认分支 `master`**，不会带 `openwrt-25.12`。下面的脚本会自动从上游最新 commit 帮你把这个分支建出来，不用手工操作。
 
 2. **把本项目下载到本地**，在目录里执行：
 
    ```bash
-   bash scripts/bootstrap.sh <你的用户名>/<fork仓库名>
+   bash scripts/bootstrap.sh <gh登录用户名>/<fork仓库名>
    ```
 
-   脚本会：确认 fork 关系 → 确保 `openwrt-25.12` 分支存在并同步一次 → 把本目录推成 `main` 分支 → 设为默认分支 → 打开 Actions 写权限（创建 Release 需要）。
+   **`<gh登录用户名>` 必须和 `gh api user --jq .login` 的输出完全一致**，写错（哪怕一个字母）会因为查无此用户而得到一连串 HTTP 404。可用 `gh auth status` 查看当前登录的是哪个账号。仓库名大小写不敏感，GitHub 会自动匹配。
+
+   脚本会：校验账号与 fork 关系 → 从上游创建 `openwrt-25.12` 分支并同步一次 → 把本目录推成 `main` 分支 → 设为默认分支 → 打开 Actions 写权限（创建 Release 需要）。
 
    <details><summary>不用脚本的手动等价步骤</summary>
 
@@ -192,6 +200,8 @@ OpenClash 的 GEO 数据源（Country.mmdb / geosite.dat / geoip.dat）官方默
 
 | 现象 | 原因 / 处理 |
 |---|---|
+| `bootstrap.sh` 报 HTTP 404 / 「用户名与登录账号不一致」 | 传入的 owner 必须和 `gh api user --jq .login` 完全一致；`gh auth status` 可查看当前登录账号。用户名拼错时 GitHub 会返回 404 而不是 403 |
+| `git push` 被拒、提示 workflow scope | token 缺 `workflow` 权限，执行 `gh auth refresh -s workflow` 后重试 |
 | `Sync upstream` 报「is not a fork」 | 仓库必须是 `immortalwrt/immortalwrt` 的 fork；用网页 Fork 创建，不能只 import 源码 |
 | 定时任务到点不跑 | 默认分支必须是 `main`；GitHub 整点 cron 可能延迟 5~30 分钟；或仓库 60 天无活动被自动停用 |
 | Release 创建失败 403 | Settings → Actions → General → Workflow permissions 需要 **Read and write**；`bootstrap.sh` 已自动设置 |
