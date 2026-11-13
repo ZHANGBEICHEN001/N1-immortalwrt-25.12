@@ -69,12 +69,8 @@ echo "       使用: $CN_REPO"
 sed -i "s|https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT|${CN_REPO}|g" include/version.mk
 sed -i "s|https://downloads.immortalwrt.org/|https://mirrors.ustc.edu.cn/immortalwrt/|g" include/version.mk
 
-# 同步 .config 种子里的值，避免 defconfig 用旧值覆盖
-if grep -q '^CONFIG_VERSION_REPO=' .config; then
-  sed -i "s|^CONFIG_VERSION_REPO=.*|CONFIG_VERSION_REPO=\"${CN_REPO}\"|" .config
-else
-  echo "CONFIG_VERSION_REPO=\"${CN_REPO}\"" >> .config
-fi
+# 注：25.12 的 VERSION_REPO 不是 Kconfig 符号，写进 .config 会被
+# make defconfig 当作未知符号丢弃；改 include/version.mk 才是唯一生效路径。
 grep -n 'VERSION_REPO' include/version.mk | head -n 3 || true
 
 # -------------------------------------------------------------

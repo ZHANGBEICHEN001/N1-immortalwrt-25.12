@@ -166,7 +166,7 @@ GitHub Actions 的 `cron` **一律按 UTC 计算**，与 `TZ: Asia/Shanghai` 无
 
 | 层级 | 处理 | 位置 |
 |---|---|---|
-| **固件内软件源**（装包用，最关键） | `downloads.immortalwrt.org` → `mirrors.ustc.edu.cn/immortalwrt/releases/25.12.x` | `scripts/diy.sh` 改 `include/version.mk` 的 `VERSION_REPO`，并同步 `.config` 的 `CONFIG_VERSION_REPO` |
+| **固件内软件源**（装包用，最关键） | `downloads.immortalwrt.org` → `mirrors.ustc.edu.cn/immortalwrt/releases/25.12.x` | `scripts/diy.sh` 改 `include/version.mk` 的 `VERSION_REPO`。注意 25.12 里它不是 Kconfig 符号，写进 `.config` 会被 `make defconfig` 丢弃 |
 | **刷机后系统时间** | 时区 `Asia/Shanghai`、NTP 用阿里云/腾讯云/`cn.ntp.org.cn` | `files/etc/uci-defaults/99-n1-custom.sh` |
 | **CI 构建期下载** | ImmortalWrt 上游 `scripts/projectsmirrors.json` **已经内置**腾讯/阿里/清华/中科大镜像，无需额外改 | 上游自带 |
 
@@ -200,6 +200,8 @@ OpenClash 的 GEO 数据源（Country.mmdb / geosite.dat / geoip.dat）官方默
 
 | 现象 | 原因 / 处理 |
 |---|---|
+| `make defconfig` 后 `CONFIG_PACKAGE_*` 全丢、报「OpenClash 未进入配置」 | `.config` 种子必须在 `feeds install -a` **之后**才放入；feeds 阶段会重建 `tmp/.config-package.in`，提前放入的包符号会被 kconfig 当成未知符号丢弃。同理 diy.sh 往 feeds 注入新包后必须再跑一次 `feeds update -a` 重建索引 |
+| `recursive dependency detected` 刷屏 | ImmortalWrt feeds 里 dnsdist / snort3 / luci-app-weechat 等包自带的 Kconfig 警告，日志仍会输出 `configuration written to .config`，不致命，可忽略 |
 | `bootstrap.sh` 报 HTTP 404 / 「用户名与登录账号不一致」 | 传入的 owner 必须和 `gh api user --jq .login` 完全一致；`gh auth status` 可查看当前登录账号。用户名拼错时 GitHub 会返回 404 而不是 403 |
 | `git push` 被拒、提示 workflow scope | token 缺 `workflow` 权限，执行 `gh auth refresh -s workflow` 后重试 |
 | `Sync upstream` 报「is not a fork」 | 仓库必须是 `immortalwrt/immortalwrt` 的 fork；用网页 Fork 创建，不能只 import 源码 |

@@ -150,9 +150,11 @@ jobs:
             n1-ccache-
           save-always: true
 
-      - name: 载入 N1 配置与自定义文件
+      - name: 载入 N1 自定义文件
         run: |
-          cp -f builder/config/n1.config openwrt/.config
+          # 注意：.config 必须等 feeds install 完成后再放。
+          # feeds 阶段会重建 tmp/.config-package.in，若此时 .config 已存在，
+          # 种子里的 CONFIG_PACKAGE_* 会被当作「未知符号」在 defconfig 时丢弃。
           rm -rf openwrt/files
           cp -a builder/files openwrt/files
           chmod -R u+rwX openwrt/files
@@ -174,14 +176,25 @@ jobs:
         run: |
           ./scripts/feeds update -a
           bash "$GITHUB_WORKSPACE/builder/scripts/diy.sh"
+          # diy.sh 往 feeds/luci/applications/ 注入了 luci-app-amlogic，
+          # 必须再 update 一次重建索引，否则 feeds install 不会把它装进来
+          ./scripts/feeds update -a
           ./scripts/feeds install -a
+          # 所有包索引就绪后才放入 config seed
+          cp -f "$GITHUB_WORKSPACE/builder/config/n1.config" .config
 
       - name: 生成最终 .config 并校验关键项
         working-directory: ./openwrt
         run: |
+          echo "---- 种子中的关键行（defconfig 前）----"
+          grep -E 'luci-app-openclash|luci-app-amlogic|CONFIG_TARGET_armsr' .config || true
           make defconfig
+          echo "---- defconfig 后 openclash / amlogic / dnsmasq 相关 ----"
+          grep -n -i -E 'openclash|amlogic|dnsmasq' .config | head -40 || true
+          echo "---- Kconfig 中的符号定义 ----"
+          grep -n -A5 -B1 'config PACKAGE_luci-app-openclash' tmp/.config-package.in | head -20 || true
           echo "---- 关键配置 ----"
-          grep -E '^CONFIG_(TARGET_armsr|TARGET_ROOTFS_TARGZ|USE_APK|VERSION_REPO|PACKAGE_luci-app-openclash|PACKAGE_luci-app-amlogic|CCACHE)' .config || true
+          grep -E '^CONFIG_(TARGET_armsr|TARGET_ROOTFS_TARGZ|USE_APK|PACKAGE_luci-app-openclash|PACKAGE_luci-app-amlogic|CCACHE)' .config || true
           grep -q '^CONFIG_TARGET_armsr_armv8=y' .config || { echo "::error::目标平台未生效"; exit 1; }
           grep -q '^CONFIG_PACKAGE_luci-app-openclash=y' .config || { echo "::error::OpenClash 未进入配置"; exit 1; }
           grep -q '^CONFIG_TARGET_ROOTFS_TARGZ=y' .config \
