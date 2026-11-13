@@ -1,0 +1,10 @@
+.DS_Store
+*.log
+*.swp
+*.img
+*.img.gz
+*.img.xz
+*.tar.gz
+sha256sums.txt
+clone/
+out/

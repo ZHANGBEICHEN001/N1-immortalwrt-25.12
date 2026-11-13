@@ -1,0 +1,280 @@
+name: Build N1 Firmware (ImmortalWrt 25.12)
+
+# 每周一自动打包。GitHub Actions 的 cron 一律按 UTC 计算：
+#   "17 1 * * 1" = UTC 周一 01:17 = 北京时间周一 09:17
+# 上游同步工作流在北京时间周一 08:47 先跑，确保这里拉到的是最新源码。
+on:
+  schedule:
+    - cron: "17 1 * * 1"
+  workflow_dispatch:
+    inputs:
+      ip_mode:
+        description: "IP 获取方式：dhcp 从主路由自动获取 / static 固定地址"
+        required: false
+        default: "dhcp"
+        type: choice
+        options:
+          - dhcp
+          - static
+      openwrt_ip:
+        description: "static 模式下的固定管理 IP（dhcp 模式忽略）"
+        required: false
+        default: "192.168.1.1"
+        type: string
+      openwrt_kernel:
+        description: "打包用的 flippy 内核系列"
+        required: false
+        default: "6.12.y"
+        type: string
+      cn_mirror:
+        description: "CI 里 feeds 也走国内 GitHub 代理（仅国内自建 runner 需要）"
+        required: false
+        default: false
+        type: boolean
+      no_cache:
+        description: "忽略 dl / ccache 缓存，做一次干净构建"
+        required: false
+        default: false
+        type: boolean
+
+env:
+  TZ: Asia/Shanghai
+  UPSTREAM_BRANCH: openwrt-25.12
+  RELEASE_TAG_PREFIX: N1
+  CN_MIRROR: ${{ inputs.cn_mirror || 'false' }}
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+# 定时和手动触发撞车时排队，不互相打断
+concurrency:
+  group: n1-firmware-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      # 默认分支 main 是轻量配置分支，只放本项目文件
+      - name: 检出构建配置（main）
+        uses: actions/checkout@v4
+        with:
+          path: builder
+
+      # fork 中的 openwrt-25.12 分支由 sync-upstream.yml 与上游保持完全一致，
+      # 这里直接拿它当编译源码，天然就是"自动同步后的最新源码"
+      - name: 检出已同步的上游源码（openwrt-25.12）
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: openwrt-25.12
+          path: openwrt
+          fetch-depth: 1
+
+      - name: 计算构建元信息
+        run: |
+          echo "BUILD_DATE=$(TZ=Asia/Shanghai date +%Y%m%d)" >> "$GITHUB_ENV"
+          echo "BUILD_DATETIME=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S %Z')" >> "$GITHUB_ENV"
+          echo "UPSTREAM_SHA=$(git -C openwrt rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "KERNEL_SERIES=${{ inputs.openwrt_kernel || '6.12.y' }}" >> "$GITHUB_ENV"
+          echo "IP_MODE=${{ inputs.ip_mode || 'dhcp' }}" >> "$GITHUB_ENV"
+          echo "N1_IP=${{ inputs.openwrt_ip || '192.168.1.1' }}" >> "$GITHUB_ENV"
+          if [ "${{ inputs.ip_mode || 'dhcp' }}" = "static" ]; then
+            echo "PACK_IP=${{ inputs.openwrt_ip || '192.168.1.1' }}" >> "$GITHUB_ENV"
+            echo "NETWORK_INFO=静态管理地址 http://${{ inputs.openwrt_ip || '192.168.1.1' }}" >> "$GITHUB_ENV"
+          else
+            # ophub 仅在 -p 不等于默认值时才改 bin/config_generate；
+            # DHCP 模式传默认值即可避免它写入任何静态地址
+            echo "PACK_IP=192.168.1.1" >> "$GITHUB_ENV"
+            echo "NETWORK_INFO=LAN 通过 DHCP 自动获取 IP，到主路由客户端列表找主机名 N1-OpenWrt" >> "$GITHUB_ENV"
+          fi
+          {
+            echo "### 本次构建"
+            echo "- 时间: $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S %Z')"
+            echo "- 上游源码: immortalwrt/immortalwrt@\`openwrt-25.12\` (\`$(git -C openwrt rev-parse --short HEAD)\`)"
+            echo "- 目标: armsr/armv8 rootfs → ophub 打包 s905d (Phicomm N1)"
+            echo "- 网络模式: ${{ inputs.ip_mode || 'dhcp' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 释放 runner 磁盘空间
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: 安装编译依赖
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install -y --no-install-recommends \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk \
+            gettext gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man intltool \
+            lib32gcc-s1 libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev \
+            libmpc-dev libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev \
+            libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano ninja-build \
+            p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils \
+            python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig \
+            texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
+          sudo timedatectl set-timezone "$TZ" || true
+          df -h
+
+      - name: 恢复 dl 源码包缓存
+        if: ${{ !inputs.no_cache }}
+        uses: actions/cache@v4
+        with:
+          path: openwrt/dl
+          key: n1-dl-${{ hashFiles('builder/config/n1.config') }}-${{ env.BUILD_DATE }}
+          restore-keys: |
+            n1-dl-${{ hashFiles('builder/config/n1.config') }}-
+            n1-dl-
+          save-always: true
+
+      - name: 恢复 ccache 缓存
+        if: ${{ !inputs.no_cache }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: n1-ccache-${{ github.ref_name }}-${{ env.BUILD_DATE }}
+          restore-keys: |
+            n1-ccache-${{ github.ref_name }}-
+            n1-ccache-
+          save-always: true
+
+      - name: 载入 N1 配置与自定义文件
+        run: |
+          cp -f builder/config/n1.config openwrt/.config
+          rm -rf openwrt/files
+          cp -a builder/files openwrt/files
+          chmod -R u+rwX openwrt/files
+          chmod +x builder/scripts/diy.sh
+
+      - name: 更新 feeds / 注入第三方包 / 换国内源
+        working-directory: ./openwrt
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG_PREFIX: ${{ env.RELEASE_TAG_PREFIX }}
+          KERNEL_SERIES: ${{ env.KERNEL_SERIES }}
+          N1_IP_MODE: ${{ env.IP_MODE }}
+          N1_IP: ${{ env.N1_IP }}
+          N1_ROOT_PASSWORD: ${{ vars.N1_ROOT_PASSWORD || 'password' }}
+          N1_GH_PROXY: ${{ vars.N1_GH_PROXY || '0' }}
+          N1_GITHUB_PROXY: ${{ vars.N1_GITHUB_PROXY || '' }}
+          IMMORTALWRT_RELEASE: ${{ vars.IMMORTALWRT_RELEASE || '' }}
+          FIRMWARE_SUFFIX: ${{ vars.N1_FIRMWARE_SUFFIX || '.img.gz' }}
+        run: |
+          ./scripts/feeds update -a
+          bash "$GITHUB_WORKSPACE/builder/scripts/diy.sh"
+          ./scripts/feeds install -a
+
+      - name: 生成最终 .config 并校验关键项
+        working-directory: ./openwrt
+        run: |
+          make defconfig
+          echo "---- 关键配置 ----"
+          grep -E '^CONFIG_(TARGET_armsr|TARGET_ROOTFS_TARGZ|USE_APK|VERSION_REPO|PACKAGE_luci-app-openclash|PACKAGE_luci-app-amlogic|CCACHE)' .config || true
+          grep -q '^CONFIG_TARGET_armsr_armv8=y' .config || { echo "::error::目标平台未生效"; exit 1; }
+          grep -q '^CONFIG_PACKAGE_luci-app-openclash=y' .config || { echo "::error::OpenClash 未进入配置"; exit 1; }
+          grep -q '^CONFIG_TARGET_ROOTFS_TARGZ=y' .config \
+            || echo "::warning::未显式启用 tar.gz 输出，以编译后的产物校验为准"
+
+      - name: 下载所有源码包
+        working-directory: ./openwrt
+        run: |
+          make download -j$(( $(nproc) * 2 ))
+          find dl -size -1k -type f -delete || true
+
+      - name: 编译 armsr/armv8 rootfs
+        working-directory: ./openwrt
+        run: |
+          echo "使用 $(nproc) 线程编译"
+          make -j$(( $(nproc) + 1 )) || make -j1 V=s
+          echo "---- 产物 ----"
+          ls -lh bin/targets/armsr/armv8/*rootfs.tar.gz
+          test -n "$(ls bin/targets/armsr/armv8/*rootfs.tar.gz 2>/dev/null)" || {
+            echo "::error::未生成 rootfs.tar.gz"; exit 1; }
+
+      - name: 用 ophub 脚本打包 N1 (s905d) 镜像
+        uses: ophub/amlogic-s9xxx-openwrt@main
+        with:
+          openwrt_path: openwrt/bin/targets/armsr/armv8/*rootfs.tar.gz
+          openwrt_board: s905d
+          kernel_repo: ophub/kernel
+          kernel_usage: flippy
+          openwrt_kernel: ${{ env.KERNEL_SERIES }}
+          auto_kernel: true
+          openwrt_size: 256/1024
+          openwrt_ip: ${{ env.PACK_IP }}
+          builder_name: ${{ github.repository_owner }}
+
+      - name: 校验产物并生成校验和
+        id: artifacts
+        run: |
+          out="${{ env.PACKAGED_OUTPUTPATH }}"
+          echo "输出目录: $out"
+          ls -lh "$out"
+          img_count=$(find "$out" -maxdepth 1 -type f \( -name '*.img.gz' -o -name '*.img.xz' -o -name '*.img' \) | wc -l)
+          if [ "$img_count" -lt 1 ]; then
+            echo "::error::未找到 N1 镜像文件"; exit 1
+          fi
+          # 先删旧校验和，避免把它自己算进去；输出到 /tmp 再移回来
+          ( cd "$out" && rm -f sha256sums.txt && \
+            sha256sum $(ls -1) > /tmp/n1-sha256sums.txt && \
+            mv /tmp/n1-sha256sums.txt sha256sums.txt )
+          echo "IMG_COUNT=$img_count" >> "$GITHUB_ENV"
+
+      - name: 上传 Actions 制品（备份 7 天）
+        uses: actions/upload-artifact@v4
+        with:
+          name: N1-firmware-${{ env.BUILD_DATE }}
+          path: ${{ env.PACKAGED_OUTPUTPATH }}/*
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: 发布到 GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG_PREFIX }}-${{ env.BUILD_DATE }}
+          name: N1 固件 ${{ env.BUILD_DATE }}
+          prerelease: false
+          make_latest: true
+          files: ${{ env.PACKAGED_OUTPUTPATH }}/*
+          body: |
+            ## ImmortalWrt 25.12 · 斐讯 N1 (s905d) 固件
+
+            - 构建时间：${{ env.BUILD_DATETIME }}
+            - 上游源码：`immortalwrt/immortalwrt@openwrt-25.12`，commit `${{ env.UPSTREAM_SHA }}`
+            - 打包内核：flippy `${{ env.KERNEL_SERIES }}`（自动取同系列最新）
+            - 网络：${{ env.NETWORK_INFO }}
+            - 登录账号 `root`，密码为仓库变量 `N1_ROOT_PASSWORD`（未设置时为 `password`）
+            - 已内置：LuCI、OpenClash、luci-app-amlogic；软件包源已指向中科大 USTC 国内镜像
+            - 产物：`*.img.gz` 为刷机镜像，`*rootfs.tar.gz` 可用于救砖/换内核重打包，`sha256sums.txt` 为校验和
+
+            > 首次刷机建议全新写入 eMMC；升级前请自行备份配置。刷机有风险，操作前请确认设备型号为斐讯 N1。
+
+      - name: 清理旧 Release（保留最近 8 个）
+        if: ${{ success() }}
+        run: |
+          # 第一次构建时 grep 无匹配会返回 1，必须吞掉，否则会误判整个 job 失败
+          tags="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+            --json tagName --jq '.[].tagName' \
+            | grep "^${RELEASE_TAG_PREFIX}-" | sort -r | tail -n +9 || true)"
+          if [ -z "$tags" ]; then
+            echo "无需清理（N1 Release 不超过 8 个）"
+          else
+            printf '%s\n' "$tags" | while read -r tag; do
+              [ -n "$tag" ] || continue
+              echo "删除旧 Release: $tag"
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+            done
+          fi

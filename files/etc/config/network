@@ -1,0 +1,20 @@
+# 斐讯 N1 默认网络配置：LAN 通过 DHCP 从主路由自动获取 IP。
+# 单网口 eth0，不做桥接；本机 DHCP 服务器由 uci-defaults 关闭，避免和主路由冲突。
+# 手动触发选 static 模式时，scripts/diy.sh 会整份覆盖本文件为固定地址版本。
+# 刷机后到主路由的 DHCP 客户端列表找主机名 N1-OpenWrt 即可拿到地址。
+
+config interface 'loopback'
+	option device 'lo'
+	option proto 'static'
+	option ipaddr '127.0.0.1'
+	option netmask '255.0.0.0'
+
+config interface 'lan'
+	option device 'eth0'
+	option proto 'dhcp'
+	option hostname 'N1-OpenWrt'
+	option delegate '0'
+
+config globals 'globals'
+	option packet_steering '2'
+	option steering_flows '256'

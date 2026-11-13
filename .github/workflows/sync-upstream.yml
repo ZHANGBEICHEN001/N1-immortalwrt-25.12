@@ -1,0 +1,86 @@
+name: Sync upstream ImmortalWrt (openwrt-25.12)
+
+# 北京时间周一 08:47（UTC 00:47）先同步，30 分钟后 build-n1.yml 再打包。
+# 用 GitHub 官方 fork 同步接口（gh repo sync / merge-upstream API），
+# 不需要 clone 几百 MB 源码，也不存在与自定义文件的合并冲突。
+on:
+  schedule:
+    - cron: "47 0 * * 1"
+  workflow_dispatch:
+    inputs:
+      trigger_build:
+        description: "同步完成后立刻触发一次固件构建（默认关，等每周一定时构建即可）"
+        required: false
+        default: false
+        type: boolean
+
+env:
+  UPSTREAM_REPO: immortalwrt/immortalwrt
+  UPSTREAM_BRANCH: openwrt-25.12
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 检出配置分支
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEFAULT_BRANCH }}
+          path: builder
+          fetch-depth: 1
+
+      - name: 同步 fork 的 openwrt-25.12 分支到上游
+        run: |
+          echo "同步 $GITHUB_REPOSITORY:$UPSTREAM_BRANCH <- $UPSTREAM_REPO:$UPSTREAM_BRANCH"
+          if ! gh repo sync "$GITHUB_REPOSITORY" \
+                --source "$UPSTREAM_REPO" \
+                --branch "$UPSTREAM_BRANCH" \
+                --force; then
+            echo "gh repo sync 失败，改用 merge-upstream API 重试"
+            gh api -X POST "repos/$GITHUB_REPOSITORY/merge-upstream" \
+              -f branch="$UPSTREAM_BRANCH"
+          fi
+
+      - name: 记录上游 commit SHA
+        id: sha
+        run: |
+          sha=$(gh api "repos/$UPSTREAM_REPO/commits/$UPSTREAM_BRANCH" --jq .sha)
+          subject=$(gh api "repos/$UPSTREAM_REPO/commits/$UPSTREAM_BRANCH" \
+                    --jq '.commit.message | split("\n")[0]')
+          echo "UPSTREAM_SHA=$sha" >> "$GITHUB_ENV"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          old=$(cat builder/UPSTREAM_SHA 2>/dev/null || echo "uninitialized")
+          if [ "$sha" = "$old" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "上游无新提交，跳过记录更新"
+          else
+            printf '%s\n' "$sha" > builder/UPSTREAM_SHA
+            cd builder
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add UPSTREAM_SHA
+            git commit -m "chore: upstream openwrt-25.12 -> ${sha:0:12}"
+            git push origin "HEAD:$DEFAULT_BRANCH"
+            cd ..
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "### 上游同步结果"
+            echo "- 分支: \`$UPSTREAM_REPO@$UPSTREAM_BRANCH\`"
+            echo "- 最新 commit: \`$sha\`"
+            echo "- 提交说明: $subject"
+            echo "- 本次是否有更新: $([ "$sha" = "$old" ] && echo 否 || echo 是)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 可选：立刻触发固件构建
+        if: ${{ inputs.trigger_build }}
+        run: |
+          gh workflow run build-n1.yml --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH"
+          echo "已触发 build-n1.yml"
