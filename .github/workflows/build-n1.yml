@@ -60,14 +60,14 @@ jobs:
     steps:
       # 默认分支 main 是轻量配置分支，只放本项目文件
       - name: 检出构建配置（main）
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: builder
 
       # fork 中的 openwrt-25.12 分支由 sync-upstream.yml 与上游保持完全一致，
       # 这里直接拿它当编译源码，天然就是"自动同步后的最新源码"
       - name: 检出已同步的上游源码（openwrt-25.12）
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ github.repository }}
           ref: openwrt-25.12
@@ -100,9 +100,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 释放 runner 磁盘空间
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@v2.0.0
         with:
-          tool-cache: true
+          preinstalled-runtimes: true
           android: true
           dotnet: true
           haskell: true
@@ -129,26 +129,40 @@ jobs:
           df -h
 
       - name: 恢复 dl 源码包缓存
+        id: dl-cache
         if: ${{ !inputs.no_cache }}
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v5
         with:
           path: openwrt/dl
           key: n1-dl-${{ hashFiles('builder/config/n1.config') }}-${{ env.BUILD_DATE }}
           restore-keys: |
             n1-dl-${{ hashFiles('builder/config/n1.config') }}-
             n1-dl-
-          save-always: true
+
+      - name: 保存 dl 源码包缓存
+        if: ${{ !inputs.no_cache && always() && steps.dl-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: openwrt/dl
+          key: n1-dl-${{ hashFiles('builder/config/n1.config') }}-${{ env.BUILD_DATE }}
 
       - name: 恢复 ccache 缓存
+        id: ccache-cache
         if: ${{ !inputs.no_cache }}
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v5
         with:
           path: ~/.ccache
           key: n1-ccache-${{ github.ref_name }}-${{ env.BUILD_DATE }}
           restore-keys: |
             n1-ccache-${{ github.ref_name }}-
             n1-ccache-
-          save-always: true
+
+      - name: 保存 ccache 缓存
+        if: ${{ !inputs.no_cache && always() && steps.ccache-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.ccache
+          key: n1-ccache-${{ github.ref_name }}-${{ env.BUILD_DATE }}
 
       - name: 载入 N1 自定义文件
         run: |
